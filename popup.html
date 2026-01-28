@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shopify Image Crawler</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>🖼️ Shopify Crawler</h1>
+        <p class="subtitle">Personalization Image Downloader</p>
+      </header>
+
+      <div class="status-section">
+        <div id="pageStatus" class="status-card">
+          <div class="status-icon">🔍</div>
+          <div class="status-text">
+            <div class="status-label">Page Status</div>
+            <div id="pageStatusText" class="status-value">Checking...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="url-section">
+        <label for="productUrl">Product URL:</label>
+        <input
+          type="text"
+          id="productUrl"
+          placeholder="https://store.com/products/..."
+          readonly
+        />
+      </div>
+
+      <div class="options-section">
+        <label class="checkbox-label">
+          <input type="checkbox" id="skipThumbnails" checked />
+          <span>Skip thumbnails (chỉ lấy ảnh chính)</span>
+        </label>
+
+        <label class="checkbox-label">
+          <input type="checkbox" id="organizeByCategory" checked />
+          <span>Organize by category</span>
+        </label>
+      </div>
+
+      <div
+        id="manualConfigSection"
+        class="manual-config-section"
+        style="display: none"
+      >
+        <label for="manualConfigUrl">Manual Config URL (optional):</label>
+        <input
+          type="text"
+          id="manualConfigUrl"
+          placeholder="https://sh.medzt.com/...json"
+        />
+        <small
+          style="color: #666; font-size: 11px; display: block; margin-top: 4px"
+        >
+          Paste config URL if auto-detection failed
+        </small>
+      </div>
+
+      <div class="action-section">
+        <button id="crawlBtn" class="btn-primary" disabled>
+          <span class="btn-icon">🚀</span>
+          <span class="btn-text">Start Crawling</span>
+        </button>
+      </div>
+
+      <div id="progressSection" class="progress-section" style="display: none">
+        <div class="progress-header">
+          <span id="progressText">Initializing...</span>
+          <span id="progressCount">0/0</span>
+        </div>
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="resultsSection" class="results-section" style="display: none">
+        <h3>📊 Results</h3>
+        <div class="results-grid">
+          <div class="result-item">
+            <div class="result-label">Categories</div>
+            <div id="totalCategories" class="result-value">0</div>
+          </div>
+          <div class="result-item">
+            <div class="result-label">Images</div>
+            <div id="totalImages" class="result-value">0</div>
+          </div>
+          <div class="result-item">
+            <div class="result-label">Downloaded</div>
+            <div id="downloadedImages" class="result-value">0</div>
+          </div>
+        </div>
+
+        <div id="categoriesList" class="categories-list"></div>
+      </div>
+
+      <footer>
+        <p class="footer-text">Made with ❤️ for Shopify stores</p>
+      </footer>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
