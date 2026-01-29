@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Shopify Personalization Image Crawler",
+  "name": "Tool crawler",
   "version": "1.0.0",
   "description": "Crawl personalization images from Shopify stores using Customily",
   "permissions": [
@@ -12,6 +12,8 @@
     "https://*.myshopify.com/*",
     "https://sh.medzt.com/*",
     "https://assets.medzt.com/*",
+    "https://sh.customily.com/*",
+    "https://cdn.customily.com/*",
     "https://*/*"
   ],
   "action": {

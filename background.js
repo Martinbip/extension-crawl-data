@@ -20,9 +20,9 @@ async function handleCrawl(productUrl, options) {
   try {
     // Step 1: Find config URL
     sendProgress('Finding Customily config...', 0, 4);
-    const configUrl = await findConfigUrl(productUrl);
+    const configData = await findConfigUrl(productUrl);
 
-    if (!configUrl) {
+    if (!configData) {
       const errorMsg =
         'Could not find Customily configuration URL. Please make sure:\n' +
         '1. The page has fully loaded\n' +
@@ -31,7 +31,11 @@ async function handleCrawl(productUrl, options) {
       throw new Error(errorMsg);
     }
 
-    console.log('[Background] Using config URL:', configUrl);
+    const { url: configUrl, apiType } = configData;
+    console.log(
+      `[Background] Using ${apiType.toUpperCase()} API config URL:`,
+      configUrl,
+    );
 
     // Step 2: Fetch configuration
     sendProgress('Fetching configuration...', 1, 4);
@@ -41,6 +45,7 @@ async function handleCrawl(productUrl, options) {
     sendProgress('Parsing images...', 2, 4);
     const imagesByCategory = parseClipartCategories(
       config,
+      apiType,
       options.skipThumbnails,
     );
 
@@ -83,18 +88,28 @@ async function handleCrawl(productUrl, options) {
 async function findConfigUrl(productUrl) {
   try {
     // First, try to get the config URL from storage (already detected by content script)
-    const stored = await chrome.storage.local.get(['config_url', 'page_url']);
+    const stored = await chrome.storage.local.get([
+      'config_url',
+      'api_type',
+      'page_url',
+    ]);
 
     console.log('[Background] Stored data:', stored);
     console.log('[Background] Current product URL:', productUrl);
 
     // If we have a stored config URL for this page, use it
     if (stored.config_url && stored.page_url === productUrl) {
-      console.log('[Background] Using stored config URL:', stored.config_url);
-      return stored.config_url;
+      console.log(
+        `[Background] Using stored ${stored.api_type?.toUpperCase() || 'OLD'} API config URL:`,
+        stored.config_url,
+      );
+      return {
+        url: stored.config_url,
+        apiType: stored.api_type || 'old',
+      };
     }
 
-    // Fallback: Try to fetch HTML and find config URL
+    // Fallback: Try to fetch HTML and find config URL (old API only)
     console.log('[Background] No stored config URL, fetching HTML...');
     const response = await fetch(productUrl);
     const html = await response.text();
@@ -103,8 +118,11 @@ async function findConfigUrl(productUrl) {
     const matches = html.match(pattern);
 
     if (matches && matches[0]) {
-      console.log('[Background] Found config URL in HTML:', matches[0]);
-      return matches[0];
+      console.log('[Background] Found OLD API config URL in HTML:', matches[0]);
+      return {
+        url: matches[0],
+        apiType: 'old',
+      };
     }
 
     console.error('[Background] Could not find config URL in HTML');
@@ -123,9 +141,64 @@ async function fetchConfig(configUrl) {
   return await response.json();
 }
 
-function parseClipartCategories(config, skipThumbnails) {
+// Parse Unified API format to old API format
+function parseUnifiedConfig(config) {
+  console.log('[Background] Parsing Unified API format...');
+
+  const options = config.sets?.[0]?.options || [];
+
+  // Convert options to clipartCategories format
+  const clipartCategories = options
+    .filter((opt) => opt.values && opt.values.length > 0)
+    .map((opt) => {
+      const categoryName = opt.label || 'Unknown';
+
+      // Convert values to cliparts format - FILTER OUT values without thumb_image
+      const cliparts = opt.values
+        .filter((val) => val.thumb_image && val.thumb_image.trim() !== '') // Only include values with valid image URLs
+        .map((val) => {
+          // Extract filename from thumb_image URL
+          const imageUrl = val.thumb_image;
+          const filename = imageUrl.split('/').pop() || 'unknown.png';
+
+          return {
+            title: val.tooltip || val.value || 'Unknown',
+            label: val.tooltip || val.value || 'Unknown',
+            file: imageUrl, // Store full URL directly
+            filename: filename,
+            url: imageUrl, // Add URL for direct access
+          };
+        });
+
+      return {
+        title: categoryName,
+        label: categoryName,
+        cliparts: cliparts,
+        children: [], // Unified API doesn't have nested categories
+      };
+    })
+    .filter((category) => category.cliparts.length > 0); // Remove categories with no valid images
+
+  console.log(
+    `[Background] Converted ${clipartCategories.length} Unified API options to categories`,
+  );
+  return clipartCategories;
+}
+
+function parseClipartCategories(config, apiType, skipThumbnails) {
   const imagesByCategory = {};
-  const clipartCategories = config.clipartCategories || [];
+
+  // Get categories based on API type
+  let clipartCategories;
+  if (apiType === 'unified') {
+    clipartCategories = parseUnifiedConfig(config);
+  } else {
+    clipartCategories = config.clipartCategories || [];
+  }
+
+  console.log(
+    `[Background] Processing ${clipartCategories.length} categories (${apiType} API)`,
+  );
 
   // Recursive function to process category and its children
   function processCategory(category, parentPath = '') {
@@ -146,20 +219,35 @@ function parseClipartCategories(config, skipThumbnails) {
       cliparts.forEach((clipart) => {
         // Get main image
         const fileData = clipart.file;
-        let fileKey = '';
+        let imageUrl = '';
+        let filename = '';
 
-        if (typeof fileData === 'string') {
-          fileKey = fileData;
-        } else if (fileData && fileData.key) {
-          fileKey = fileData.key;
+        // Check if this is from Unified API (has full URL in clipart.url)
+        if (clipart.url) {
+          imageUrl = clipart.url;
+          filename = clipart.filename || clipart.url.split('/').pop();
+        }
+        // Old API format
+        else {
+          let fileKey = '';
+          if (typeof fileData === 'string') {
+            fileKey = fileData;
+          } else if (fileData && fileData.key) {
+            fileKey = fileData.key;
+          }
+
+          if (fileKey) {
+            imageUrl = BASE_ASSET_URL + fileKey;
+            filename = fileKey.split('/').pop();
+          }
         }
 
-        if (fileKey) {
+        if (imageUrl) {
           const label = clipart.title || clipart.label || '';
           imagesByCategory[categoryPath].push({
-            url: BASE_ASSET_URL + fileKey,
+            url: imageUrl,
             label: label,
-            filename: fileKey.split('/').pop(),
+            filename: filename,
             type: 'main',
           });
         }
