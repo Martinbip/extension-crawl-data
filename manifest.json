@@ -14,6 +14,8 @@
     "https://assets.medzt.com/*",
     "https://sh.customily.com/*",
     "https://cdn.customily.com/*",
+    "https://ext-api.buildyou.io/*",
+    "https://assets.buildyou.io/*",
     "https://*/*"
   ],
   "action": {
@@ -35,7 +37,11 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://*/*"],
+      "matches": [
+        "https://wanderprints.com/*",
+        "https://macorner.co/*",
+        "https://trendingcustom.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

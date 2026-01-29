@@ -70,17 +70,31 @@ async function handleCrawl(productUrl, options) {
     };
 
     // Send completion message
-    chrome.runtime.sendMessage({
-      type: 'crawlComplete',
-      data: result,
-    });
+    chrome.runtime.sendMessage(
+      {
+        type: 'crawlComplete',
+        data: result,
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          /* Ignore */
+        }
+      },
+    );
 
     return result;
   } catch (error) {
-    chrome.runtime.sendMessage({
-      type: 'crawlError',
-      error: error.message,
-    });
+    chrome.runtime.sendMessage(
+      {
+        type: 'crawlError',
+        error: error.message,
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          /* Ignore */
+        }
+      },
+    );
     throw error;
   }
 }
@@ -134,11 +148,27 @@ async function findConfigUrl(productUrl) {
 }
 
 async function fetchConfig(configUrl) {
-  const response = await fetch(configUrl);
-  if (!response.ok) {
-    throw new Error('Failed to fetch configuration');
+  try {
+    console.log('[Background] Fetching config from:', configUrl);
+    const response = await fetch(configUrl);
+
+    console.log('[Background] Response status:', response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[Background] API Error Response:', errorText);
+      throw new Error(
+        `Failed to fetch configuration (HTTP ${response.status}): ${errorText}`,
+      );
+    }
+
+    const data = await response.json();
+    console.log('[Background] Config fetched successfully');
+    return data;
+  } catch (error) {
+    console.error('[Background] Fetch error:', error);
+    throw new Error(`Failed to fetch configuration: ${error.message}`);
   }
-  return await response.json();
 }
 
 // Parse Unified API format to old API format
@@ -185,6 +215,52 @@ function parseUnifiedConfig(config) {
   return clipartCategories;
 }
 
+// Parse BuildYou (Wanderprints) API format
+function parseBuildYouConfig(config) {
+  console.log('[Background] Parsing BuildYou API format...');
+
+  // Navigation path to elements: data.customizationForm.elements
+  const elements = config.data?.customizationForm?.elements || [];
+  const BUILDYOU_ASSET_BASE = 'https://assets.buildyou.io/';
+
+  // Convert elements to clipartCategories format
+  const clipartCategories = elements
+    .filter((el) => el.values && el.values.length > 0)
+    .map((el) => {
+      const categoryName = el.label || 'Unknown';
+
+      // Filter and map values
+      const cliparts = el.values
+        .filter((val) => val.thumbnailPath && val.thumbnailPath.trim() !== '') // Only values with images
+        .map((val) => {
+          const imageUrl = BUILDYOU_ASSET_BASE + val.thumbnailPath;
+          const filename = val.thumbnailPath.split('/').pop();
+          const label = val.tooltip || val.value || 'Unknown';
+
+          return {
+            title: label,
+            label: label,
+            file: imageUrl,
+            filename: filename,
+            url: imageUrl,
+          };
+        });
+
+      return {
+        title: categoryName,
+        label: categoryName,
+        cliparts: cliparts,
+        children: [],
+      };
+    })
+    .filter((category) => category.cliparts.length > 0);
+
+  console.log(
+    `[Background] Converted ${clipartCategories.length} BuildYou elements to categories`,
+  );
+  return clipartCategories;
+}
+
 function parseClipartCategories(config, apiType, skipThumbnails) {
   const imagesByCategory = {};
 
@@ -192,6 +268,8 @@ function parseClipartCategories(config, apiType, skipThumbnails) {
   let clipartCategories;
   if (apiType === 'unified') {
     clipartCategories = parseUnifiedConfig(config);
+  } else if (apiType === 'buildyou') {
+    clipartCategories = parseBuildYouConfig(config);
   } else {
     clipartCategories = config.clipartCategories || [];
   }
@@ -422,10 +500,18 @@ function sanitizeFilename(name) {
 }
 
 function sendProgress(status, current, total) {
-  chrome.runtime.sendMessage({
-    type: 'crawlProgress',
-    status: status,
-    current: current,
-    total: total,
-  });
+  chrome.runtime.sendMessage(
+    {
+      type: 'crawlProgress',
+      status: status,
+      current: current,
+      total: total,
+    },
+    () => {
+      // Suppress "Receiving end does not exist" error if popup is closed
+      if (chrome.runtime.lastError) {
+        // Ignore
+      }
+    },
+  );
 }

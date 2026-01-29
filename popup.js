@@ -17,9 +17,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Check storage first
   chrome.storage.local.get(
-    ['config_url', 'page_url', 'customily_detected'],
+    ['config_url', 'page_url', 'customily_detected', 'provider'],
     (stored) => {
       console.log('[Popup] Storage data:', stored);
+      // NOTE: We could potentially use stored data here immediately,
+      // but the existing logic seems to prefer checking via message first.
+      // However, if we want to show it immediately if stored for *this* url, we could.
+      // But let's stick to the message pattern to be sure it's fresh,
+      // or we can use the storage if message fails?
+      // The current code just logs it. I will leave it as logging for now,
+      // but ensure provider is logged.
     },
   );
 
@@ -37,7 +44,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log('[Popup] Response from content script:', response);
 
     if (response && response.detected) {
-      updatePageStatus(true, response.configUrl);
+      updatePageStatus(true, response.configUrl, response.provider);
       isCustomilyDetected = true;
     } else {
       updatePageStatus(false);
@@ -48,12 +55,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('crawlBtn').addEventListener('click', startCrawling);
 });
 
-function updatePageStatus(detected, configUrl = null) {
+function updatePageStatus(detected, configUrl = null, provider = 'customily') {
   const statusText = document.getElementById('pageStatusText');
   const crawlBtn = document.getElementById('crawlBtn');
 
   if (detected) {
-    statusText.textContent = '✅ Customily Detected';
+    if (provider === 'maconner') {
+      statusText.textContent = '✅ Maconner Tool Detected';
+    } else if (provider === 'buildyou') {
+      statusText.textContent = '✅ BuildYou Detected';
+    } else {
+      statusText.textContent = '✅ Customily Detected';
+    }
     statusText.classList.add('detected');
     statusText.classList.remove('not-detected');
     crawlBtn.disabled = false;
@@ -80,7 +93,7 @@ async function startCrawling() {
   // Alert for debugging (you can remove this later)
   if (!stored.config_url) {
     alert(
-      '⚠️ DEBUG: No config URL in storage!\n\nStored data: ' +
+      '⚠️ DEBUG: No config URL in storage!\\n\\nStored data: ' +
         JSON.stringify(stored, null, 2),
     );
   }
@@ -97,7 +110,7 @@ async function startCrawling() {
   progressSection.style.display = 'block';
   resultsSection.style.display = 'none';
 
-  updateProgress('Finding Customily config...', 0, 0);
+  updateProgress('Starting crawl...', 0, 4);
 
   try {
     // Get options
@@ -116,9 +129,7 @@ async function startCrawling() {
         },
       },
       (response) => {
-        if (response.success) {
-          handleCrawlProgress(response);
-        } else {
+        if (response && !response.success) {
           showError(response.error);
         }
       },
@@ -128,24 +139,24 @@ async function startCrawling() {
   }
 }
 
-function handleCrawlProgress(data) {
-  // Listen for progress updates
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'crawlProgress') {
-      updateProgress(message.status, message.current, message.total);
-    } else if (message.type === 'crawlComplete') {
-      showResults(message.data);
-    } else if (message.type === 'crawlError') {
-      showError(message.error);
-    }
-  });
-}
+// Set up message listener immediately when popup loads
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'crawlProgress') {
+    updateProgress(message.status, message.current, message.total);
+  } else if (message.type === 'crawlComplete') {
+    showResults(message.data);
+  } else if (message.type === 'crawlError') {
+    showError(message.error);
+  }
+});
 
 function updateProgress(text, current, total) {
-  document.getElementById('progressText').textContent = text;
-  document.getElementById('progressCount').textContent = `${current}/${total}`;
+  const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
 
-  const percentage = total > 0 ? (current / total) * 100 : 0;
+  document.getElementById('progressText').textContent = text;
+  document.getElementById('progressCount').textContent =
+    `${current}/${total} (${percentage}%)`;
+
   document.getElementById('progressFill').style.width = `${percentage}%`;
 }
 

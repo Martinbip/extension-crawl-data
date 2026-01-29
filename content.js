@@ -46,20 +46,95 @@ function getShopDomain() {
     return metaShop.content;
   }
 
-  // Try from Shopify object
-  if (window.Shopify && window.Shopify.shop) {
-    return window.Shopify.shop;
-  }
+  // Try from Shopify object (if available in content script - usually not, but check)
+  // Note: content scripts can't see page variables directly, so this usually fails
+  // unless we inject a script.
 
-  // Try to extract from page source
+  // Try to extract from page source (most reliable for content script)
   const pageSource = document.documentElement.innerHTML;
-  const match = pageSource.match(/"shop":\s*"([^"]+\.myshopify\.com)"/);
+  const match = pageSource.match(/Shopify\.shop\s*=\s*"([^"]+)"/);
   if (match) {
     return match[1];
   }
 
+  const match2 = pageSource.match(/"shop":\s*"([^"]+\.myshopify\.com)"/);
+  if (match2) {
+    return match2[1];
+  }
+
   return null;
 }
+
+// ... (other functions)
+
+// Inject script to extract BuildYou data from Main World
+function injectBuildYouExtractor() {
+  const script = document.createElement('script');
+  script.textContent = `
+    (function() {
+      // Poll for BuildYou
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        if (window.BuildYou && window.BuildYou.store) { // Wait for store to be present
+           const data = {
+             slug: window.BuildYou.product?.slug || window.BuildYou.slug,
+             store: window.BuildYou.store
+           };
+           window.postMessage({ type: 'BUILDYOU_EXTRACTED', data: data }, '*');
+           clearInterval(interval);
+        }
+        if (attempts > 20) clearInterval(interval); // Stop after 10 seconds
+      }, 500);
+    })();
+  `;
+  (document.head || document.documentElement).appendChild(script);
+  script.remove();
+}
+
+// Listen for messages from injected script
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'BUILDYOU_EXTRACTED') {
+    console.log(
+      '[Content] Received BuildYou data from main world:',
+      event.data.data,
+    );
+    window.detectedBuildYouData = event.data.data;
+
+    // Trigger check immediately
+    const result = checkCustomilyPresence();
+    storeResult(result);
+  }
+});
+
+// Auto-detect on page load
+window.addEventListener('load', () => {
+  console.log('[Content] Page loaded, auto-detecting Customily...');
+
+  // Inject extractor for BuildYou (Main World access)
+  injectBuildYouExtractor();
+
+  // Try immediately
+  let result = checkCustomilyPresence();
+
+  // Polling for dynamic content
+  let retryCount = 0;
+  const maxRetries = 10;
+
+  const pollInterval = setInterval(() => {
+    retryCount++;
+    console.log(`[Content] Polling check ${retryCount}/${maxRetries}...`);
+    result = checkCustomilyPresence();
+
+    if (result.detected && result.configUrl) {
+      storeResult(result);
+      clearInterval(pollInterval);
+    } else if (retryCount >= maxRetries) {
+      storeResult(result); // Store final result even if false
+      clearInterval(pollInterval);
+    }
+  }, 1000);
+});
 
 // Helper: Get product handle from URL
 function getProductHandle() {
@@ -75,7 +150,72 @@ function checkCustomilyPresence() {
   let configUrl = detectedConfigUrl; // Use intercepted URL if available
   let apiType = detectedApiType;
 
-  // Method 1: Check performance entries for already-loaded config
+  // Method 1: Check for BuildYou FIRST (highest priority)
+  if (!configUrl) {
+    // Strategy A: Check if we received data from injected script (Main World)
+    if (window.detectedBuildYouData) {
+      const { slug, store } = window.detectedBuildYouData;
+      console.log('[Content] BuildYou data from injection:', { slug, store });
+      if (slug && store) {
+        configUrl = `https://ext-api.buildyou.io/v1/campaigns/by-product-slug/${slug}?store_domain=${store}`;
+        apiType = 'buildyou';
+        console.log(
+          '[Content] 🚀 Found BuildYou config via Injected Script:',
+          configUrl,
+        );
+      }
+    }
+
+    // Strategy B: Check window.BuildYou (only works if not isolated, unlikely but good to keep)
+    if (
+      !configUrl &&
+      window.BuildYou &&
+      window.BuildYou.product &&
+      window.BuildYou.store
+    ) {
+      const slug = window.BuildYou.product.slug || window.BuildYou.slug;
+      const store = window.BuildYou.store;
+      console.log('[Content] BuildYou data from window.BuildYou:', {
+        slug,
+        store,
+      });
+
+      if (slug && store) {
+        configUrl = `https://ext-api.buildyou.io/v1/campaigns/by-product-slug/${slug}?store_domain=${store}`;
+        apiType = 'buildyou';
+        console.log(
+          '[Content] 🚀 Found BuildYou config via Window object:',
+          configUrl,
+        );
+      }
+    }
+
+    // Strategy C: Construct from metadata (fallback)
+    if (!configUrl) {
+      const shopDomain = getShopDomain();
+      const productHandle = getProductHandle();
+      console.log('[Content] Fallback metadata:', {
+        shopDomain,
+        productHandle,
+      });
+
+      // Check if page has BuildYou script or elements to justify this guess
+      const hasBuildYouScript =
+        document.body.innerHTML.includes('buildyou.io') ||
+        document.head.innerHTML.includes('buildyou.io');
+
+      if (shopDomain && productHandle && hasBuildYouScript) {
+        configUrl = `https://ext-api.buildyou.io/v1/campaigns/by-product-slug/${productHandle}?store_domain=${shopDomain}`;
+        apiType = 'buildyou';
+        console.log(
+          '[Content] 🔨 Constructed BuildYou config from metadata:',
+          configUrl,
+        );
+      }
+    }
+  }
+
+  // Method 2: Check performance entries for already-loaded config
   if (!configUrl) {
     try {
       const entries = performance.getEntriesByType('resource');
@@ -112,7 +252,7 @@ function checkCustomilyPresence() {
     }
   }
 
-  // Method 2: Search in page HTML for old API
+  // Method 3: Search in page HTML for old API
   if (!configUrl) {
     const pageSource = document.documentElement.innerHTML;
 
@@ -139,7 +279,7 @@ function checkCustomilyPresence() {
     }
   }
 
-  // Method 3: Try to construct old API URL from page metadata
+  // Method 4: Try to construct old API URL from page metadata
   if (!configUrl) {
     console.log(
       '[Content] Attempting to construct config URL from page metadata...',
@@ -156,7 +296,7 @@ function checkCustomilyPresence() {
     }
   }
 
-  // Method 4: Check script tags for old API
+  // Method 5: Check script tags for old API
   if (!configUrl) {
     console.log('[Content] Checking script tags...');
     const scripts = Array.from(document.querySelectorAll('script'));
@@ -186,14 +326,25 @@ function checkCustomilyPresence() {
     document.documentElement.innerHTML.includes('medzt.com');
 
   if (configUrl) {
+    // Determine provider type
+    // Check if it's Maconner (medzt.com)
+    const isMaconner = configUrl.includes('medzt.com');
+    // Check if it's BuildYou
+    const isBuildYou = apiType === 'buildyou';
+
+    let provider = 'customily';
+    if (isMaconner) provider = 'maconner';
+    if (isBuildYou) provider = 'buildyou';
+
     console.log(
-      `[Content] ✅ Customily detected with ${apiType?.toUpperCase()} API:`,
+      `[Content] ✅ ${provider.toUpperCase()} detected with ${apiType?.toUpperCase()} API:`,
       configUrl,
     );
     return {
       detected: true,
       configUrl: configUrl,
       apiType: apiType || 'old', // Default to 'old' if not set
+      provider: provider,
     };
   } else if (hasCustomilyElements) {
     console.log('[Content] ⚠️ Found Customily elements but no config URL');
@@ -201,6 +352,7 @@ function checkCustomilyPresence() {
       detected: true,
       configUrl: null,
       apiType: null,
+      provider: 'customily', // Valid assumption? or unknown? defaulting to customily for now
     };
   }
 
@@ -209,8 +361,40 @@ function checkCustomilyPresence() {
     detected: false,
     configUrl: null,
     apiType: null,
+    provider: null,
   };
 }
+
+// Inject script to extract BuildYou data from Main World
+function injectBuildYouExtractor() {
+  const script = document.createElement('script');
+  script.textContent = `
+    (function() {
+      try {
+        if (window.BuildYou) {
+           const data = {
+             slug: window.BuildYou.product?.slug || window.BuildYou.slug,
+             store: window.BuildYou.store
+           };
+           window.postMessage({ type: 'BUILDYOU_EXTRACTED', data: data }, '*');
+        }
+      } catch(e) {}
+    })();
+  `;
+  (document.head || document.documentElement).appendChild(script);
+  script.remove();
+}
+
+// Listen for messages from injected script
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'BUILDYOU_EXTRACTED') {
+    console.log(
+      '[Content] Received BuildYou data from main world:',
+      event.data.data,
+    );
+    window.detectedBuildYouData = event.data.data;
+  }
+});
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -222,36 +406,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true; // Keep message channel open
 });
 
-// Auto-detect on page load
-window.addEventListener('load', () => {
-  console.log('[Content] Page loaded, auto-detecting Customily...');
-
-  // Try immediately
-  let result = checkCustomilyPresence();
-
-  // If detected but no config URL, try again after delays (for dynamic loading)
-  if (result.detected && !result.configUrl) {
-    console.log('[Content] Retrying in 2 seconds for dynamic content...');
-    setTimeout(() => {
-      console.log('[Content] Retry attempt 1...');
-      result = checkCustomilyPresence();
-
-      // If still not found, try one more time after 5 seconds
-      if (result.detected && !result.configUrl) {
-        console.log('[Content] Retrying in 3 more seconds...');
-        setTimeout(() => {
-          console.log('[Content] Retry attempt 2...');
-          result = checkCustomilyPresence();
-          storeResult(result);
-        }, 3000);
-      } else {
-        storeResult(result);
-      }
-    }, 2000);
-  } else {
-    storeResult(result);
-  }
-});
+// (Replaced in previous step)
 
 function storeResult(result) {
   if (result.detected) {
@@ -261,6 +416,7 @@ function storeResult(result) {
         customily_detected: true,
         config_url: result.configUrl,
         api_type: result.apiType,
+        provider: result.provider,
         page_url: window.location.href,
       },
       () => {
@@ -268,6 +424,7 @@ function storeResult(result) {
           customily_detected: true,
           config_url: result.configUrl,
           api_type: result.apiType,
+          provider: result.provider,
           page_url: window.location.href,
         });
       },
