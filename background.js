@@ -155,6 +155,21 @@ async function findConfigUrl(productUrl) {
       };
     }
 
+    const patternCdn =
+      /https:\/\/cdn\.customily\.com\/[^"'\s<>]+\.json[^"'\s<>]*/g;
+    const matchesCdn = html.match(patternCdn);
+
+    if (matchesCdn && matchesCdn[0]) {
+      console.log(
+        '[Background] Found CDN API config URL in HTML:',
+        matchesCdn[0],
+      );
+      return {
+        url: matchesCdn[0],
+        apiType: 'old',
+      };
+    }
+
     console.error('[Background] Could not find config URL in HTML');
     return null;
   } catch (error) {
@@ -402,7 +417,7 @@ async function downloadImagesAsZip(
   const zipFilename = `${productHandle}_${timestamp}`;
 
   console.log('[Background] Creating ZIP file:', zipFilename);
-  console.log(`[Background] Total images to download: `);
+  console.log(`[Background] Total images to download: ${totalImages}`);
 
   // Create new ZIP instance
   const zip = new JSZip();
@@ -420,7 +435,11 @@ async function downloadImagesAsZip(
       try {
         // Update progress with real current count (initialSteps + downloaded images)
         const currentStep = initialSteps + downloaded;
-        sendProgress(`Downloading ${category}... `, currentStep, totalSteps);
+        sendProgress(
+          `Downloading ${category}... (${downloaded + 1}/${totalImages})`,
+          currentStep,
+          totalSteps,
+        );
 
         // Fetch image as blob
         const response = await fetch(image.url);

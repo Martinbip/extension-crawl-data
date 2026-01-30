@@ -60,11 +60,10 @@ function updatePageStatus(detected, configUrl = null, provider = 'customily') {
   const crawlBtn = document.getElementById('crawlBtn');
 
   if (detected) {
-    if (provider === 'maconner') {
-      statusText.textContent = '✅ Maconner Tool Detected';
-    } else if (provider === 'buildyou') {
+    if (provider === 'buildyou') {
       statusText.textContent = '✅ BuildYou Detected';
     } else {
+      // Both 'customily' and old 'medzt.com' configs show as Customily
       statusText.textContent = '✅ Customily Detected';
     }
     statusText.classList.add('detected');
@@ -197,7 +196,7 @@ function showError(error) {
   const crawlBtn = document.getElementById('crawlBtn');
   const progressSection = document.getElementById('progressSection');
 
-  progressSection.style.display = 'none';
+  progressSection.classList.add('hidden');
 
   alert(`Error: ${error}`);
 

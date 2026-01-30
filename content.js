@@ -2,7 +2,7 @@
 
 // Store detected config URL from network requests
 let detectedConfigUrl = null;
-let detectedApiType = null; // 'old' or 'unified'
+let detectedApiType = null; // 'old' or 'unified' or 'cdn'
 
 // Monitor network requests for config URL (runs immediately)
 if (typeof PerformanceObserver !== 'undefined') {
@@ -27,6 +27,18 @@ if (typeof PerformanceObserver !== 'undefined') {
           detectedApiType = 'unified';
           console.log(
             '[Content] 🎯 Intercepted UNIFIED API config URL:',
+            detectedConfigUrl,
+          );
+        }
+        // Check for CDN Customily (cdn.customily.com) - often contains .json
+        else if (
+          entry.name.includes('cdn.customily.com') &&
+          entry.name.includes('.json')
+        ) {
+          detectedConfigUrl = entry.name;
+          detectedApiType = 'old'; // Usually CDN serves the same JSON structure as the old API
+          console.log(
+            '[Content] 🎯 Intercepted CDN API config URL:',
             detectedConfigUrl,
           );
         }
@@ -64,77 +76,6 @@ function getShopDomain() {
 
   return null;
 }
-
-// ... (other functions)
-
-// Inject script to extract BuildYou data from Main World
-function injectBuildYouExtractor() {
-  const script = document.createElement('script');
-  script.textContent = `
-    (function() {
-      // Poll for BuildYou
-      let attempts = 0;
-      const interval = setInterval(() => {
-        attempts++;
-        if (window.BuildYou && window.BuildYou.store) { // Wait for store to be present
-           const data = {
-             slug: window.BuildYou.product?.slug || window.BuildYou.slug,
-             store: window.BuildYou.store
-           };
-           window.postMessage({ type: 'BUILDYOU_EXTRACTED', data: data }, '*');
-           clearInterval(interval);
-        }
-        if (attempts > 20) clearInterval(interval); // Stop after 10 seconds
-      }, 500);
-    })();
-  `;
-  (document.head || document.documentElement).appendChild(script);
-  script.remove();
-}
-
-// Listen for messages from injected script
-window.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'BUILDYOU_EXTRACTED') {
-    console.log(
-      '[Content] Received BuildYou data from main world:',
-      event.data.data,
-    );
-    window.detectedBuildYouData = event.data.data;
-
-    // Trigger check immediately
-    const result = checkCustomilyPresence();
-    storeResult(result);
-  }
-});
-
-// Auto-detect on page load
-window.addEventListener('load', () => {
-  console.log('[Content] Page loaded, auto-detecting Customily...');
-
-  // Inject extractor for BuildYou (Main World access)
-  injectBuildYouExtractor();
-
-  // Try immediately
-  let result = checkCustomilyPresence();
-
-  // Polling for dynamic content
-  let retryCount = 0;
-  const maxRetries = 10;
-
-  const pollInterval = setInterval(() => {
-    retryCount++;
-    console.log(`[Content] Polling check ${retryCount}/${maxRetries}...`);
-    result = checkCustomilyPresence();
-
-    if (result.detected && result.configUrl) {
-      storeResult(result);
-      clearInterval(pollInterval);
-    } else if (retryCount >= maxRetries) {
-      storeResult(result); // Store final result even if false
-      clearInterval(pollInterval);
-    }
-  }, 1000);
-});
 
 // Helper: Get product handle from URL
 function getProductHandle() {
@@ -189,38 +130,14 @@ function checkCustomilyPresence() {
         );
       }
     }
-
-    // Strategy C: Construct from metadata (fallback)
-    if (!configUrl) {
-      const shopDomain = getShopDomain();
-      const productHandle = getProductHandle();
-      console.log('[Content] Fallback metadata:', {
-        shopDomain,
-        productHandle,
-      });
-
-      // Check if page has BuildYou script or elements to justify this guess
-      const hasBuildYouScript =
-        document.body.innerHTML.includes('buildyou.io') ||
-        document.head.innerHTML.includes('buildyou.io');
-
-      if (shopDomain && productHandle && hasBuildYouScript) {
-        configUrl = `https://ext-api.buildyou.io/v1/campaigns/by-product-slug/${productHandle}?store_domain=${shopDomain}`;
-        apiType = 'buildyou';
-        console.log(
-          '[Content] 🔨 Constructed BuildYou config from metadata:',
-          configUrl,
-        );
-      }
-    }
   }
 
-  // Method 2: Check performance entries for already-loaded config
+  // Method 2: Check performance entries for already-loaded config (if not caught by line 10 observer)
   if (!configUrl) {
     try {
       const entries = performance.getEntriesByType('resource');
 
-      // Try old API first
+      // Try old API first (medzt)
       const medztEntry = entries.find(
         (e) => e.name.includes('sh.medzt.com') && e.name.includes('.json'),
       );
@@ -233,7 +150,23 @@ function checkCustomilyPresence() {
         );
       }
 
-      // Try Unified API if old API not found
+      // Try CDN API (cdn.customily.com)
+      if (!configUrl) {
+        const cdnEntry = entries.find(
+          (e) =>
+            e.name.includes('cdn.customily.com') && e.name.includes('.json'),
+        );
+        if (cdnEntry) {
+          configUrl = cdnEntry.name;
+          apiType = 'old'; // Assuming CDN json has same structure as old API
+          console.log(
+            '[Content] ✅ Found CDN API config URL in performance entries:',
+            configUrl,
+          );
+        }
+      }
+
+      // Try Unified API if others not found
       if (!configUrl) {
         const unifiedEntry = entries.find((e) =>
           e.name.includes('sh.customily.com/api/settings/unified'),
@@ -252,24 +185,23 @@ function checkCustomilyPresence() {
     }
   }
 
-  // Method 3: Search in page HTML for old API
+  // Method 3: Search in page HTML for APIs
   if (!configUrl) {
     const pageSource = document.documentElement.innerHTML;
 
-    const patterns = [
-      /https:\/\/sh\.medzt\.com\/[^"'\s<>]+\.json[^"'\s<>]*/g,
-      /https:\/\/sh\.medzt\.com\/[^"'\s]+\.json/g,
-      /"(https:\/\/sh\.medzt\.com\/[^"]+\.json[^"]*)"/g,
-      /'(https:\/\/sh\.medzt\.com\/[^']+\.json[^']*)'/g,
+    // Search for cdn.customily.com patterns
+    const cdnPatterns = [
+      /https:\/\/cdn\.customily\.com\/[^"'\s<>]+\.json[^"'\s<>]*/g,
+      /"(https:\/\/cdn\.customily\.com\/[^"]+\.json[^"]*)"/g,
     ];
 
-    for (const pattern of patterns) {
+    for (const pattern of cdnPatterns) {
       const matches = pageSource.match(pattern);
       if (matches && matches.length > 0) {
         configUrl = matches[0].replace(/['"]/g, '');
         apiType = 'old';
         console.log(
-          '[Content] ✅ Found OLD API config URL with pattern:',
+          '[Content] ✅ Found CDN API config URL with pattern:',
           pattern,
           '→',
           configUrl,
@@ -277,32 +209,46 @@ function checkCustomilyPresence() {
         break;
       }
     }
-  }
 
-  // Method 4: Try to construct old API URL from page metadata
-  if (!configUrl) {
-    console.log(
-      '[Content] Attempting to construct config URL from page metadata...',
-    );
+    // Search for sh.medzt.com patterns
+    if (!configUrl) {
+      const patterns = [
+        /https:\/\/sh\.medzt\.com\/[^"'\s<>]+\.json[^"'\s<>]*/g,
+        /https:\/\/sh\.medzt\.com\/[^"'\s]+\.json/g,
+        /"(https:\/\/sh\.medzt\.com\/[^"]+\.json[^"]*)"/g,
+        /'(https:\/\/sh\.medzt\.com\/[^']+\.json[^']*)'/g,
+      ];
 
-    const shopDomain = getShopDomain();
-    const productHandle = getProductHandle();
-
-    if (shopDomain && productHandle) {
-      // Construct old API URL: https://sh.medzt.com/{shop_domain}/{product_handle}.json
-      configUrl = `https://sh.medzt.com/${shopDomain}/${productHandle}.json`;
-      apiType = 'old';
-      console.log('[Content] 🔨 Constructed OLD API config URL:', configUrl);
+      for (const pattern of patterns) {
+        const matches = pageSource.match(pattern);
+        if (matches && matches.length > 0) {
+          configUrl = matches[0].replace(/['"]/g, '');
+          apiType = 'old';
+          console.log(
+            '[Content] ✅ Found OLD API config URL with pattern:',
+            pattern,
+            '→',
+            configUrl,
+          );
+          break;
+        }
+      }
     }
   }
 
-  // Method 5: Check script tags for old API
+  // Method 4: Try to construct old API URL from page metadata (FALLBACK)
+  // REMOVED: This was causing false positives for cdn.customily.com stores.
+  // We should not guess the URL if we can't find it.
+
+  // Method 5: Check script tags (as another layer of lookup)
   if (!configUrl) {
     console.log('[Content] Checking script tags...');
     const scripts = Array.from(document.querySelectorAll('script'));
     for (const script of scripts) {
       const scriptContent = script.textContent || script.innerHTML;
-      const match = scriptContent.match(
+
+      // Check for Medzt
+      let match = scriptContent.match(
         /https:\/\/sh\.medzt\.com\/[^\s"']+\.json/,
       );
       if (match) {
@@ -314,10 +260,24 @@ function checkCustomilyPresence() {
         );
         break;
       }
+
+      // Check for CDN Customily
+      match = scriptContent.match(
+        /https:\/\/cdn\.customily\.com\/[^\s"']+\.json/,
+      );
+      if (match) {
+        configUrl = match[0];
+        apiType = 'old';
+        console.log(
+          '[Content] ✅ Found CDN API config URL in script tag:',
+          configUrl,
+        );
+        break;
+      }
     }
   }
 
-  // Check for Customily elements as fallback detection
+  // Final confirmation check for any Customily elements
   const hasCustomilyElements =
     document.querySelector('.ant-form-item') !== null ||
     document.querySelector('[class*="customily"]') !== null ||
@@ -327,14 +287,17 @@ function checkCustomilyPresence() {
 
   if (configUrl) {
     // Determine provider type
-    // Check if it's Maconner (medzt.com)
-    const isMaconner = configUrl.includes('medzt.com');
-    // Check if it's BuildYou
-    const isBuildYou = apiType === 'buildyou';
+    let provider = 'customily'; // Default
 
-    let provider = 'customily';
-    if (isMaconner) provider = 'maconner';
-    if (isBuildYou) provider = 'buildyou';
+    if (apiType === 'buildyou' || configUrl.includes('buildyou.io')) {
+      provider = 'buildyou';
+    } else if (
+      configUrl.includes('medzt.com') ||
+      configUrl.includes('customily.com') ||
+      configUrl.includes('customily')
+    ) {
+      provider = 'customily';
+    }
 
     console.log(
       `[Content] ✅ ${provider.toUpperCase()} detected with ${apiType?.toUpperCase()} API:`,
@@ -343,7 +306,7 @@ function checkCustomilyPresence() {
     return {
       detected: true,
       configUrl: configUrl,
-      apiType: apiType || 'old', // Default to 'old' if not set
+      apiType: apiType || 'old',
       provider: provider,
     };
   } else if (hasCustomilyElements) {
@@ -352,7 +315,7 @@ function checkCustomilyPresence() {
       detected: true,
       configUrl: null,
       apiType: null,
-      provider: 'customily', // Valid assumption? or unknown? defaulting to customily for now
+      provider: 'customily',
     };
   }
 
@@ -370,15 +333,20 @@ function injectBuildYouExtractor() {
   const script = document.createElement('script');
   script.textContent = `
     (function() {
-      try {
-        if (window.BuildYou) {
+      // Poll for BuildYou
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        if (window.BuildYou && window.BuildYou.store) { 
            const data = {
              slug: window.BuildYou.product?.slug || window.BuildYou.slug,
              store: window.BuildYou.store
            };
            window.postMessage({ type: 'BUILDYOU_EXTRACTED', data: data }, '*');
+           clearInterval(interval);
         }
-      } catch(e) {}
+        if (attempts > 20) clearInterval(interval); // Stop after 10 seconds
+      }, 500);
     })();
   `;
   (document.head || document.documentElement).appendChild(script);
@@ -393,7 +361,40 @@ window.addEventListener('message', (event) => {
       event.data.data,
     );
     window.detectedBuildYouData = event.data.data;
+
+    // Trigger check immediately
+    const result = checkCustomilyPresence();
+    storeResult(result);
   }
+});
+
+// Auto-detect on page load
+window.addEventListener('load', () => {
+  console.log('[Content] Page loaded, auto-detecting Customily...');
+
+  // Inject extractor for BuildYou (Main World access)
+  injectBuildYouExtractor();
+
+  // Try immediately
+  let result = checkCustomilyPresence();
+
+  // Polling for dynamic content
+  let retryCount = 0;
+  const maxRetries = 10;
+
+  const pollInterval = setInterval(() => {
+    retryCount++;
+    console.log(`[Content] Polling check ${retryCount}/${maxRetries}...`);
+    result = checkCustomilyPresence();
+
+    if (result.detected && result.configUrl) {
+      storeResult(result);
+      clearInterval(pollInterval);
+    } else if (retryCount >= maxRetries) {
+      storeResult(result);
+      clearInterval(pollInterval);
+    }
+  }, 1000);
 });
 
 // Listen for messages from popup
@@ -405,8 +406,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   return true; // Keep message channel open
 });
-
-// (Replaced in previous step)
 
 function storeResult(result) {
   if (result.detected) {
