@@ -18,8 +18,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 async function handleCrawl(productUrl, options) {
   try {
+    // Initial steps: 3 (find config, fetch config, parse images)
+    const INITIAL_STEPS = 3;
+
     // Step 1: Find config URL
-    sendProgress('Finding Customily config...', 0, 4);
+    sendProgress('Finding Customily config...', 0, INITIAL_STEPS);
     const configData = await findConfigUrl(productUrl);
 
     if (!configData) {
@@ -38,26 +41,39 @@ async function handleCrawl(productUrl, options) {
     );
 
     // Step 2: Fetch configuration
-    sendProgress('Fetching configuration...', 1, 4);
+    sendProgress('Fetching configuration...', 1, INITIAL_STEPS);
     const config = await fetchConfig(configUrl);
 
     // Step 3: Parse images
-    sendProgress('Parsing images...', 2, 4);
+    sendProgress('Parsing images...', 2, INITIAL_STEPS);
     const imagesByCategory = parseClipartCategories(
       config,
       apiType,
       options.skipThumbnails,
     );
 
-    // Step 4: Download images as ZIP
-    sendProgress('Creating ZIP file...', 3, 4);
+    // Calculate total images
+    const totalImages = Object.values(imagesByCategory).reduce(
+      (sum, imgs) => sum + imgs.length,
+      0,
+    );
+
+    // Total steps = initial steps + number of images
+    const totalSteps = INITIAL_STEPS + totalImages;
+
+    // Update progress with new total
+    sendProgress('Starting download...', INITIAL_STEPS, totalSteps);
+
+    // Step 4: Download images as ZIP with real-time progress
     const downloadResults = await downloadImagesAsZip(
       imagesByCategory,
       productUrl,
+      INITIAL_STEPS,
+      totalSteps,
     );
 
     // Complete
-    sendProgress('Complete!', 4, 4);
+    sendProgress('Complete!', totalSteps, totalSteps);
 
     const result = {
       totalCategories: Object.keys(imagesByCategory).length,
@@ -369,7 +385,12 @@ function parseClipartCategories(config, apiType, skipThumbnails) {
   return imagesByCategory;
 }
 
-async function downloadImagesAsZip(imagesByCategory, productUrl) {
+async function downloadImagesAsZip(
+  imagesByCategory,
+  productUrl,
+  initialSteps,
+  totalSteps,
+) {
   const totalImages = Object.values(imagesByCategory).reduce(
     (sum, imgs) => sum + imgs.length,
     0,
@@ -381,7 +402,7 @@ async function downloadImagesAsZip(imagesByCategory, productUrl) {
   const zipFilename = `${productHandle}_${timestamp}`;
 
   console.log('[Background] Creating ZIP file:', zipFilename);
-  sendProgress(`Creating ZIP file...`, 3, 4);
+  console.log(`[Background] Total images to download: `);
 
   // Create new ZIP instance
   const zip = new JSZip();
@@ -397,12 +418,9 @@ async function downloadImagesAsZip(imagesByCategory, productUrl) {
       const image = images[i];
 
       try {
-        // Update progress
-        sendProgress(
-          `Downloading ${category}... (${downloaded + 1}/${totalImages})`,
-          3,
-          4,
-        );
+        // Update progress with real current count (initialSteps + downloaded images)
+        const currentStep = initialSteps + downloaded;
+        sendProgress(`Downloading ${category}... `, currentStep, totalSteps);
 
         // Fetch image as blob
         const response = await fetch(image.url);
@@ -441,7 +459,12 @@ async function downloadImagesAsZip(imagesByCategory, productUrl) {
   }
 
   // Generate ZIP file
-  sendProgress(`Generating ZIP file... (${downloaded} images)`, 3, 4);
+  const currentAfterDownload = initialSteps + downloaded;
+  sendProgress(
+    `Generating ZIP file... (${downloaded} images)`,
+    currentAfterDownload,
+    totalSteps,
+  );
   console.log('[Background] Generating ZIP blob...');
 
   const zipBlob = await zip.generateAsync({
@@ -457,7 +480,7 @@ async function downloadImagesAsZip(imagesByCategory, productUrl) {
   );
 
   // Download ZIP file
-  sendProgress(`Preparing download...`, 3, 4);
+  sendProgress(`Preparing download...`, currentAfterDownload, totalSteps);
 
   // Convert Blob to Data URL (URL.createObjectURL not available in Service Workers)
   const reader = new FileReader();
