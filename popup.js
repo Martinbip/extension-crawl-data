@@ -51,8 +51,42 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Check if there's an ongoing crawl and restore state
+  chrome.runtime.sendMessage({ action: 'getCrawlState' }, (state) => {
+    if (chrome.runtime.lastError) {
+      console.log('[Popup] Error getting crawl state:', chrome.runtime.lastError);
+      return;
+    }
+
+    console.log('[Popup] Crawl state:', state);
+
+    if (state && state.isCrawling) {
+      // Restore crawling UI
+      const crawlBtn = document.getElementById('crawlBtn');
+      const progressSection = document.getElementById('progressSection');
+      const resultsSection = document.getElementById('resultsSection');
+
+      crawlBtn.disabled = true;
+      crawlBtn.querySelector('.btn-text').textContent = 'Crawling...';
+      progressSection.style.display = 'block';
+      resultsSection.style.display = 'none';
+
+      // Restore progress
+      updateProgress(state.status, state.current, state.total);
+      console.log('[Popup] Restored ongoing crawl state');
+    } else if (state && state.result) {
+      // Show completed results
+      showResults(state.result);
+      console.log('[Popup] Restored completed crawl results');
+    } else if (state && state.error) {
+      // Show error
+      console.log('[Popup] Previous crawl had error:', state.error);
+    }
+  });
+
   // Setup event listeners
   document.getElementById('crawlBtn').addEventListener('click', startCrawling);
+  document.getElementById('cancelBtn').addEventListener('click', cancelCrawl);
 });
 
 function updatePageStatus(detected, configUrl = null, provider = 'customily') {
@@ -109,7 +143,7 @@ async function startCrawling() {
   progressSection.style.display = 'block';
   resultsSection.style.display = 'none';
 
-  updateProgress('Starting crawl...', 0, 4);
+  updateProgress('Starting crawl...', 0, 0);
 
   try {
     // Get options
@@ -146,17 +180,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     showResults(message.data);
   } else if (message.type === 'crawlError') {
     showError(message.error);
+  } else if (message.type === 'crawlCanceled') {
+    showCanceled(message.error);
   }
 });
 
 function updateProgress(text, current, total) {
-  const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
-
   document.getElementById('progressText').textContent = text;
-  document.getElementById('progressCount').textContent =
-    `${current}/${total} (${percentage}%)`;
 
-  document.getElementById('progressFill').style.width = `${percentage}%`;
+  // If total is 0, we're in preparation phase - hide progress bar details
+  if (total === 0) {
+    document.getElementById('progressCount').textContent = 'Preparing...';
+    document.getElementById('progressFill').style.width = '0%';
+  } else {
+    // Download phase - show actual progress
+    const percentage = Math.round((current / total) * 100);
+    document.getElementById('progressCount').textContent =
+      `${current}/${total} (${percentage}%)`;
+    document.getElementById('progressFill').style.width = `${percentage}%`;
+  }
 }
 
 function showResults(data) {
@@ -202,4 +244,29 @@ function showError(error) {
 
   crawlBtn.disabled = false;
   crawlBtn.querySelector('.btn-text').textContent = 'Start Crawling';
+}
+
+function showCanceled(message) {
+  const crawlBtn = document.getElementById('crawlBtn');
+  const progressSection = document.getElementById('progressSection');
+
+  progressSection.style.display = 'none';
+
+  console.log('[Popup] Crawl canceled:', message);
+
+  crawlBtn.disabled = false;
+  crawlBtn.querySelector('.btn-text').textContent = 'Start Crawling';
+}
+
+function cancelCrawl() {
+  console.log('[Popup] Cancel button clicked');
+
+  chrome.runtime.sendMessage({ action: 'cancelCrawl' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.log('[Popup] Error canceling crawl:', chrome.runtime.lastError);
+      return;
+    }
+
+    console.log('[Popup] Cancel response:', response);
+  });
 }

@@ -210,6 +210,35 @@ input[type='text']:focus {
   width: 0%;
 }
 
+.btn-cancel {
+  width: 100%;
+  padding: 10px 16px;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  transition:
+    background 0.2s,
+    transform 0.2s;
+}
+
+.btn-cancel:hover {
+  background: #dc2626;
+  transform: translateY(-1px);
+}
+
+.btn-cancel:active {
+  transform: translateY(0);
+}
+
 .results-section {
   padding: 0 20px 20px;
 }

@@ -5,6 +5,19 @@ importScripts('jszip.min.js');
 
 const BASE_ASSET_URL = 'https://assets.medzt.com/';
 
+// Global crawl state (persists while service worker is alive)
+let crawlState = {
+  isCrawling: false,
+  status: '',
+  current: 0,
+  total: 0,
+  result: null,
+  error: null,
+};
+
+// AbortController for canceling ongoing crawl
+let abortController = null;
+
 // Listen for crawl requests
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startCrawl') {
@@ -13,16 +26,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((error) => sendResponse({ success: false, error: error.message }));
 
     return true; // Keep message channel open for async response
+  } else if (request.action === 'getCrawlState') {
+    // Return current crawl state to popup
+    sendResponse(crawlState);
+    return true;
+  } else if (request.action === 'cancelCrawl') {
+    // Cancel ongoing crawl
+    if (abortController) {
+      abortController.abort();
+      sendResponse({ success: true, message: 'Crawl canceled' });
+    } else {
+      sendResponse({ success: false, message: 'No ongoing crawl' });
+    }
+    return true;
   }
 });
 
 async function handleCrawl(productUrl, options) {
   try {
-    // Initial steps: 3 (find config, fetch config, parse images)
-    const INITIAL_STEPS = 3;
+    // Create new AbortController for this crawl
+    abortController = new AbortController();
 
-    // Step 1: Find config URL
-    sendProgress('Finding Customily config...', 0, INITIAL_STEPS);
+    // Set crawling state
+    crawlState.isCrawling = true;
+    crawlState.error = null;
+    crawlState.result = null;
+
+    // Step 1: Find config URL (no progress bar, just status text)
+    sendProgress('Finding Customily config...', 0, 0);
     const configData = await findConfigUrl(productUrl);
 
     if (!configData) {
@@ -40,12 +71,12 @@ async function handleCrawl(productUrl, options) {
       configUrl,
     );
 
-    // Step 2: Fetch configuration
-    sendProgress('Fetching configuration...', 1, INITIAL_STEPS);
+    // Step 2: Fetch configuration (no progress bar, just status text)
+    sendProgress('Fetching configuration...', 0, 0);
     const config = await fetchConfig(configUrl);
 
-    // Step 3: Parse images
-    sendProgress('Parsing images...', 2, INITIAL_STEPS);
+    // Step 3: Parse images (no progress bar, just status text)
+    sendProgress('Parsing images...', 0, 0);
     const imagesByCategory = parseClipartCategories(
       config,
       apiType,
@@ -58,22 +89,18 @@ async function handleCrawl(productUrl, options) {
       0,
     );
 
-    // Total steps = initial steps + number of images
-    const totalSteps = INITIAL_STEPS + totalImages;
-
-    // Update progress with new total
-    sendProgress('Starting download...', INITIAL_STEPS, totalSteps);
+    // Start download with progress starting from 0
+    sendProgress('Starting download...', 0, totalImages);
 
     // Step 4: Download images as ZIP with real-time progress
     const downloadResults = await downloadImagesAsZip(
       imagesByCategory,
       productUrl,
-      INITIAL_STEPS,
-      totalSteps,
+      totalImages,
     );
 
     // Complete
-    sendProgress('Complete!', totalSteps, totalSteps);
+    sendProgress('Complete!', totalImages, totalImages);
 
     const result = {
       totalCategories: Object.keys(imagesByCategory).length,
@@ -85,7 +112,10 @@ async function handleCrawl(productUrl, options) {
       categories: imagesByCategory,
     };
 
-    // Send completion message
+    // Update state and send completion message
+    crawlState.isCrawling = false;
+    crawlState.result = result;
+
     chrome.runtime.sendMessage(
       {
         type: 'crawlComplete',
@@ -100,10 +130,18 @@ async function handleCrawl(productUrl, options) {
 
     return result;
   } catch (error) {
+    // Check if it was canceled
+    const wasCanceled = error.name === 'AbortError';
+    const errorMessage = wasCanceled ? 'Crawl canceled by user' : error.message;
+
+    // Update state and send error message
+    crawlState.isCrawling = false;
+    crawlState.error = errorMessage;
+
     chrome.runtime.sendMessage(
       {
-        type: 'crawlError',
-        error: error.message,
+        type: wasCanceled ? 'crawlCanceled' : 'crawlError',
+        error: errorMessage,
       },
       () => {
         if (chrome.runtime.lastError) {
@@ -111,7 +149,11 @@ async function handleCrawl(productUrl, options) {
         }
       },
     );
-    throw error;
+
+    // Only throw if it's a real error, not a cancel
+    if (!wasCanceled) {
+      throw error;
+    }
   }
 }
 
@@ -181,7 +223,9 @@ async function findConfigUrl(productUrl) {
 async function fetchConfig(configUrl) {
   try {
     console.log('[Background] Fetching config from:', configUrl);
-    const response = await fetch(configUrl);
+    const response = await fetch(configUrl, {
+      signal: abortController?.signal,
+    });
 
     console.log('[Background] Response status:', response.status);
 
@@ -403,14 +447,8 @@ function parseClipartCategories(config, apiType, skipThumbnails) {
 async function downloadImagesAsZip(
   imagesByCategory,
   productUrl,
-  initialSteps,
-  totalSteps,
+  totalImages,
 ) {
-  const totalImages = Object.values(imagesByCategory).reduce(
-    (sum, imgs) => sum + imgs.length,
-    0,
-  );
-
   // Create unique folder name for this crawl session
   const productHandle = extractProductHandle(productUrl);
   const timestamp = new Date().toISOString().slice(0, 16).replace(/:/g, '-');
@@ -433,16 +471,17 @@ async function downloadImagesAsZip(
       const image = images[i];
 
       try {
-        // Update progress with real current count (initialSteps + downloaded images)
-        const currentStep = initialSteps + downloaded;
+        // Update progress with downloaded count
         sendProgress(
           `Downloading ${category}... (${downloaded + 1}/${totalImages})`,
-          currentStep,
-          totalSteps,
+          downloaded,
+          totalImages,
         );
 
         // Fetch image as blob
-        const response = await fetch(image.url);
+        const response = await fetch(image.url, {
+          signal: abortController?.signal,
+        });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -471,6 +510,12 @@ async function downloadImagesAsZip(
           `(${(blob.size / 1024).toFixed(2)} KB)`,
         );
       } catch (error) {
+        // If crawl was canceled, stop immediately
+        if (error.name === 'AbortError') {
+          throw error;
+        }
+
+        // Otherwise, just log and continue with next image
         console.error('[Background] Failed to download:', image.url, error);
         failed++;
       }
@@ -478,11 +523,10 @@ async function downloadImagesAsZip(
   }
 
   // Generate ZIP file
-  const currentAfterDownload = initialSteps + downloaded;
   sendProgress(
     `Generating ZIP file... (${downloaded} images)`,
-    currentAfterDownload,
-    totalSteps,
+    downloaded,
+    totalImages,
   );
   console.log('[Background] Generating ZIP blob...');
 
@@ -499,7 +543,7 @@ async function downloadImagesAsZip(
   );
 
   // Download ZIP file
-  sendProgress(`Preparing download...`, currentAfterDownload, totalSteps);
+  sendProgress(`Preparing download...`, downloaded, totalImages);
 
   // Convert Blob to Data URL (URL.createObjectURL not available in Service Workers)
   const reader = new FileReader();
@@ -542,6 +586,11 @@ function sanitizeFilename(name) {
 }
 
 function sendProgress(status, current, total) {
+  // Update crawl state
+  crawlState.status = status;
+  crawlState.current = current;
+  crawlState.total = total;
+
   chrome.runtime.sendMessage(
     {
       type: 'crawlProgress',
